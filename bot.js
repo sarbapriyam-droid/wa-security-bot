@@ -2,8 +2,6 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const pino = require('pino');
 const http = require('http');
 const yts = require('yt-search');
-const ytdl = require('@distube/ytdl-core');
-const fs = require('fs');
 
 const BOT_PHONE_NUMBER = "919330785861";
 
@@ -28,7 +26,6 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Request Pairing Code if not registered
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
@@ -40,22 +37,16 @@ async function startBot() {
         }, 4000);
     }
 
-    // Connection Events
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
-
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed. Reconnecting:', shouldReconnect);
-            if (shouldReconnect) {
-                startBot();
-            }
+            if (shouldReconnect) startBot();
         } else if (connection === 'open') {
             console.log('✅ WhatsApp Group Security & Music Bot is active and connected!');
         }
     });
 
-    // Detect Incoming Messages
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
@@ -63,7 +54,6 @@ async function startBot() {
         const remoteJid = msg.key.remoteJid;
         const isGroup = remoteJid.endsWith('@g.us');
 
-        // Extract text safely
         const messageText = msg.message?.conversation || 
                             msg.message?.extendedTextMessage?.text || 
                             msg.message?.imageMessage?.caption || '';
@@ -89,38 +79,52 @@ async function startBot() {
                     text: `🎶 Downloading *${video.title}* (${video.timestamp})...\nPlease wait.` 
                 }, { quoted: msg });
 
-                const filePath = `./temp_${Date.now()}.mp3`;
-                const stream = ytdl(video.url, { filter: 'audioonly', quality: 'highestaudio' });
-                const writeStream = fs.createWriteStream(filePath);
+                // Multi-API Fallback (No YouTube 429 blocking on Render)
+                let audioUrl = null;
 
-                stream.pipe(writeStream);
-
-                writeStream.on('finish', async () => {
-                    await sock.sendMessage(remoteJid, {
-                        audio: { url: filePath },
-                        mimetype: 'audio/mp4',
-                        fileName: `${video.title}.mp3`
-                    }, { quoted: msg });
-
-                    if (fs.existsSync(filePath)) {
-                        fs.unlinkSync(filePath);
+                // API 1
+                try {
+                    const res1 = await fetch(`https://api.giftedtech.my.id/api/download/ytmp3?apikey=gifted&url=${encodeURIComponent(video.url)}`);
+                    const data1 = await res1.json();
+                    if (data1?.result?.download_url) {
+                        audioUrl = data1.result.download_url;
                     }
-                });
+                } catch (e) {
+                    console.log('API 1 failed, trying API 2...');
+                }
 
-                writeStream.on('error', (err) => {
-                    console.error('File stream error:', err);
-                });
+                // API 2
+                if (!audioUrl) {
+                    try {
+                        const res2 = await fetch(`https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(video.url)}`);
+                        const data2 = await res2.json();
+                        audioUrl = data2?.result?.download?.url || data2?.result?.url;
+                    } catch (e) {
+                        console.log('API 2 failed...');
+                    }
+                }
+
+                if (!audioUrl) {
+                    throw new Error('Could not retrieve audio stream from endpoints.');
+                }
+
+                // Send Audio file to WhatsApp chat
+                await sock.sendMessage(remoteJid, {
+                    audio: { url: audioUrl },
+                    mimetype: 'audio/mp4',
+                    fileName: `${video.title}.mp3`
+                }, { quoted: msg });
 
             } catch (err) {
-                console.error('Music download error:', err);
-                await sock.sendMessage(remoteJid, { text: '⚠️ Failed to fetch or download the song.' }, { quoted: msg });
+                console.error('Music download error:', err.message);
+                await sock.sendMessage(remoteJid, { text: '⚠️ Failed to send audio. Please try another song.' }, { quoted: msg });
             }
             return;
         }
 
-        // --- 2. Sticker Security Checker (Groups Only) ---
+        // --- 2. Sticker Security Checker ---
         if (!isGroup) return;
-        if (msg.key.fromMe) return; // Don't kick yourself
+        if (msg.key.fromMe) return;
 
         const isSticker = !!msg.message.stickerMessage;
         if (!isSticker) return;
