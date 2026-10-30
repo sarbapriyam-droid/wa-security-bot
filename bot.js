@@ -5,7 +5,7 @@ const yts = require('yt-search');
 const ytdl = require('@distube/ytdl-core');
 const fs = require('fs');
 
-// Render Health Check Server
+// Render Health Check Web Server
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -41,7 +41,7 @@ async function startBot() {
         }
     });
 
-    // Detect Messages
+    // Detect Incoming Messages
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
