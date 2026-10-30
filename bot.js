@@ -1,7 +1,8 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
 const http = require('http');
+
+const BOT_PHONE_NUMBER = "919330785861"; 
 
 // Render Health Check Server
 const PORT = process.env.PORT || 8000;
@@ -13,7 +14,6 @@ http.createServer((req, res) => {
 });
 
 async function startBot() {
-    // Session state stored in auth_info_baileys folder
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     const sock = makeWASocket({
@@ -25,14 +25,23 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Connection Events & QR Generator
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
+    // Request Pairing Code if not registered
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+                console.log('\n=========================================');
+                console.log(`👉 YOUR WHATSAPP PAIRING CODE: ${code}`);
+                console.log('=========================================\n');
+            } catch (err) {
+                console.error('Failed to request pairing code:', err);
+            }
+        }, 5000);
+    }
 
-        if (qr) {
-            console.log('\n--- SCAN THIS QR CODE FROM WHATSAPP ---');
-            qrcode.generate(qr, { small: true });
-        }
+    // Connection Events
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -62,7 +71,6 @@ async function startBot() {
         console.log(`[Sticker Detected] Group: ${remoteJid} | Sender: ${sender}`);
 
         try {
-            // Get group metadata to verify permissions
             const metadata = await sock.groupMetadata(remoteJid);
             const myJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
 
@@ -78,14 +86,14 @@ async function startBot() {
                 return;
             }
 
-            // Remove the user from the group
+            // Remove participant
             await sock.groupParticipantsUpdate(remoteJid, [sender], 'remove');
             console.log(`Successfully removed user: ${sender}`);
 
-            // Delete the sticker message
+            // Delete sticker
             await sock.sendMessage(remoteJid, { delete: msg.key });
 
-            // Notify group
+            // Send notification
             await sock.sendMessage(remoteJid, { text: '⚠️ Stickers are not allowed in this group. Participant removed.' });
 
         } catch (error) {
