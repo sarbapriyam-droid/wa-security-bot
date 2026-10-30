@@ -1,14 +1,16 @@
 {
   "name": "wa-security-bot",
   "version": "1.0.0",
-  "description": "WhatsApp Anti-Sticker Group Security Bot",
+  "description": "WhatsApp Group Security & Music Bot",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.14.4",
     "@whiskeysockets/baileys": "^6.7.9",
     "pino": "^9.0.0",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "yt-search": "^0.3.5"
   }
 }
