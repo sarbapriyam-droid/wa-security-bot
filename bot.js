@@ -2,6 +2,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const pino = require('pino');
 const http = require('http');
 const yts = require('yt-search');
+const fs = require('fs');
 
 const BOT_PHONE_NUMBER = "919330785861";
 
@@ -15,38 +16,57 @@ http.createServer((req, res) => {
 });
 
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const authFolder = 'auth_info_baileys';
+    const { state, saveCreds } = await useMultiFileAuthState(authFolder);
 
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         auth: state,
-        browser: ['Ubuntu', 'Chrome', '20.0.04']
+        browser: ['Chrome (Linux)', '', '']
     });
 
     sock.ev.on('creds.update', saveCreds);
 
+    // Request Pairing Code if not registered
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-                console.log(`👉 YOUR WHATSAPP PAIRING CODE: ${code}`);
+                console.log(`\n====================================`);
+                console.log(`🔥 NEW PAIRING CODE: ${code}`);
+                console.log(`====================================\n`);
             } catch (err) {
-                console.error('Failed to request pairing code:', err);
+                console.error('Pairing Code Error:', err.message);
             }
-        }, 4000);
+        }, 8000);
     }
 
+    // Connection Updates
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
+
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) startBot();
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log(`Connection closed (Status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
+
+            if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+                console.log('Session expired/rejected. Cleaning session directory...');
+                try {
+                    fs.rmSync(authFolder, { recursive: true, force: true });
+                } catch (e) {}
+            }
+
+            if (shouldReconnect) {
+                startBot();
+            }
         } else if (connection === 'open') {
             console.log('✅ WhatsApp Group Security & Music Bot is active and connected!');
         }
     });
 
+    // Detect Messages
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
@@ -58,12 +78,11 @@ async function startBot() {
                             msg.message?.extendedTextMessage?.text || 
                             msg.message?.imageMessage?.caption || '';
 
-        // --- 1. Music Command Handler (!play) ---
+        // --- Music Command (!play) ---
         if (messageText.toLowerCase().startsWith('!play')) {
             const query = messageText.replace(/!play/i, '').trim();
             if (!query) return;
 
-            console.log(`[Music Request] Query: ${query}`);
             await sock.sendMessage(remoteJid, { text: `🔍 Searching for: *${query}*...` }, { quoted: msg });
 
             try {
@@ -81,44 +100,26 @@ async function startBot() {
 
                 let audioUrl = null;
 
-                // Provider 1: Cobalt Engine (Direct high-speed mp3 converter)
                 try {
                     const cobaltRes = await fetch("https://cobalt-backend.canary.fun/api/json", {
                         method: "POST",
-                        headers: {
-                            "Accept": "application/json",
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify({
-                            url: video.url,
-                            downloadMode: "audio",
-                            audioFormat: "mp3"
-                        })
+                        headers: { "Accept": "application/json", "Content-Type": "application/json" },
+                        body: JSON.stringify({ url: video.url, downloadMode: "audio", audioFormat: "mp3" })
                     });
                     const cobaltData = await cobaltRes.json();
-                    if (cobaltData.url) {
-                        audioUrl = cobaltData.url;
-                    }
-                } catch (e) {
-                    console.log('Cobalt failed, trying fallback API...');
-                }
+                    if (cobaltData.url) audioUrl = cobaltData.url;
+                } catch (e) {}
 
-                // Provider 2: Secondary Audio API Endpoint
                 if (!audioUrl) {
                     try {
                         const fallbackRes = await fetch(`https://bk9.fun/download/youtube?url=${encodeURIComponent(video.url)}`);
                         const fallbackData = await fallbackRes.json();
                         audioUrl = fallbackData?.BK9?.downloadUrl || fallbackData?.BK9?.download;
-                    } catch (e) {
-                        console.log('Fallback failed...');
-                    }
+                    } catch (e) {}
                 }
 
-                if (!audioUrl) {
-                    throw new Error('All audio sources returned empty.');
-                }
+                if (!audioUrl) throw new Error('Download link unavailable.');
 
-                // Send audio to WhatsApp
                 await sock.sendMessage(remoteJid, {
                     audio: { url: audioUrl },
                     mimetype: 'audio/mp4',
@@ -126,18 +127,15 @@ async function startBot() {
                 }, { quoted: msg });
 
             } catch (err) {
-                console.error('Music download error:', err.message);
+                console.error('Music error:', err.message);
                 await sock.sendMessage(remoteJid, { text: '⚠️ Failed to send audio. Please try another song.' }, { quoted: msg });
             }
             return;
         }
 
-        // --- 2. Sticker Security Checker ---
-        if (!isGroup) return;
-        if (msg.key.fromMe) return;
-
-        const isSticker = !!msg.message.stickerMessage;
-        if (!isSticker) return;
+        // --- Sticker Security Checker ---
+        if (!isGroup || msg.key.fromMe) return;
+        if (!msg.message.stickerMessage) return;
 
         const sender = msg.key.participant || msg.participant;
 
@@ -154,7 +152,6 @@ async function startBot() {
             await sock.groupParticipantsUpdate(remoteJid, [sender], 'remove');
             await sock.sendMessage(remoteJid, { delete: msg.key });
             await sock.sendMessage(remoteJid, { text: '⚠️ Stickers are not allowed in this group. Participant removed.' });
-
         } catch (error) {
             console.error('Action error:', error);
         }
