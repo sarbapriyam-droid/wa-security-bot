@@ -4,7 +4,9 @@ const fs = require('fs');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const http = require('http');
-
+const yts = require('yt-search');
+const ytdl = require('@distube/ytdl-core');
+const fs = require('fs');
 const BOT_PHONE_NUMBER = "919330785861"; 
 
 // Render Health Check Server
@@ -101,6 +103,55 @@ async function startBot() {
 
         } catch (error) {
             console.error('Action error:', error);
+        }
+        // Music Command Handler: !play <song name>
+        const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+        
+        if (messageText.startsWith('!play ')) {
+            const query = messageText.replace('!play ', '').trim();
+            if (!query) return;
+
+            await sock.sendMessage(remoteJid, { text: `🔍 Searching for: *${query}*...` }, { quoted: msg });
+
+            try {
+                const searchResults = await yts(query);
+                const video = searchResults.videos[0];
+
+                if (!video) {
+                    await sock.sendMessage(remoteJid, { text: '❌ No songs found!' }, { quoted: msg });
+                    return;
+                }
+
+                await sock.sendMessage(remoteJid, { 
+                    text: `🎶 Downloading *${video.title}* (${video.timestamp})...\nPlease wait a moment.` 
+                }, { quoted: msg });
+
+                const filePath = `./temp_${Date.now()}.mp3`;
+                const stream = ytdl(video.url, { filter: 'audioonly', quality: 'highestaudio' });
+                const writeStream = fs.createWriteStream(filePath);
+
+                stream.pipe(writeStream);
+
+                writeStream.on('finish', async () => {
+                    await sock.sendMessage(remoteJid, {
+                        audio: { url: filePath },
+                        mimetype: 'audio/mp4',
+                        fileName: `${video.title}.mp3`
+                    }, { quoted: msg });
+
+                    if (fs.existsSync(filePath)) {
+                        fs.unlinkSync(filePath);
+                    }
+                });
+
+                writeStream.on('error', (err) => {
+                    console.error('File stream error:', err);
+                });
+
+            } catch (err) {
+                console.error('Music download error:', err);
+                await sock.sendMessage(remoteJid, { text: '⚠️ Failed to download the song. Please try again later.' }, { quoted: msg });
+            }
         }
     });
 }
