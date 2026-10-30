@@ -5,6 +5,8 @@ const yts = require('yt-search');
 const ytdl = require('@distube/ytdl-core');
 const fs = require('fs');
 
+const BOT_PHONE_NUMBER = "919330785861";
+
 // Render Health Check Web Server
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
@@ -26,6 +28,18 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // Request Pairing Code if not registered
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+                console.log(`👉 YOUR WHATSAPP PAIRING CODE: ${code}`);
+            } catch (err) {
+                console.error('Failed to request pairing code:', err);
+            }
+        }, 4000);
+    }
+
     // Connection Events
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
@@ -44,18 +58,22 @@ async function startBot() {
     // Detect Incoming Messages
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+        if (!msg.message) return;
 
         const remoteJid = msg.key.remoteJid;
         const isGroup = remoteJid.endsWith('@g.us');
 
+        // Extract text safely
+        const messageText = msg.message?.conversation || 
+                            msg.message?.extendedTextMessage?.text || 
+                            msg.message?.imageMessage?.caption || '';
+
         // --- 1. Music Command Handler (!play) ---
-        const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-        
-        if (messageText.startsWith('!play ')) {
-            const query = messageText.replace('!play ', '').trim();
+        if (messageText.toLowerCase().startsWith('!play')) {
+            const query = messageText.replace(/!play/i, '').trim();
             if (!query) return;
 
+            console.log(`[Music Request] Query: ${query}`);
             await sock.sendMessage(remoteJid, { text: `🔍 Searching for: *${query}*...` }, { quoted: msg });
 
             try {
@@ -102,30 +120,23 @@ async function startBot() {
 
         // --- 2. Sticker Security Checker (Groups Only) ---
         if (!isGroup) return;
+        if (msg.key.fromMe) return; // Don't kick yourself
 
         const isSticker = !!msg.message.stickerMessage;
         if (!isSticker) return;
 
         const sender = msg.key.participant || msg.participant;
-        console.log(`[Sticker Detected] Group: ${remoteJid} | Sender: ${sender}`);
 
         try {
             const metadata = await sock.groupMetadata(remoteJid);
             const myJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
 
             const botAdmin = metadata.participants.find(p => p.id === myJid && (p.admin === 'admin' || p.admin === 'superadmin'));
-            if (!botAdmin) {
-                console.log('Bot is not an admin in this group. Cannot remove user.');
-                return;
-            }
+            if (!botAdmin) return;
 
             const senderParticipant = metadata.participants.find(p => p.id === sender);
-            if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'superadmin')) {
-                console.log('Sender is an Admin. Ignoring kick action.');
-                return;
-            }
+            if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'superadmin')) return;
 
-            // Remove participant & delete sticker
             await sock.groupParticipantsUpdate(remoteJid, [sender], 'remove');
             await sock.sendMessage(remoteJid, { delete: msg.key });
             await sock.sendMessage(remoteJid, { text: '⚠️ Stickers are not allowed in this group. Participant removed.' });
