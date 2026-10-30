@@ -79,36 +79,46 @@ async function startBot() {
                     text: `🎶 Downloading *${video.title}* (${video.timestamp})...\nPlease wait.` 
                 }, { quoted: msg });
 
-                // Multi-API Fallback (No YouTube 429 blocking on Render)
                 let audioUrl = null;
 
-                // API 1
+                // Provider 1: Cobalt Engine (Direct high-speed mp3 converter)
                 try {
-                    const res1 = await fetch(`https://api.giftedtech.my.id/api/download/ytmp3?apikey=gifted&url=${encodeURIComponent(video.url)}`);
-                    const data1 = await res1.json();
-                    if (data1?.result?.download_url) {
-                        audioUrl = data1.result.download_url;
+                    const cobaltRes = await fetch("https://cobalt-backend.canary.fun/api/json", {
+                        method: "POST",
+                        headers: {
+                            "Accept": "application/json",
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            url: video.url,
+                            downloadMode: "audio",
+                            audioFormat: "mp3"
+                        })
+                    });
+                    const cobaltData = await cobaltRes.json();
+                    if (cobaltData.url) {
+                        audioUrl = cobaltData.url;
                     }
                 } catch (e) {
-                    console.log('API 1 failed, trying API 2...');
+                    console.log('Cobalt failed, trying fallback API...');
                 }
 
-                // API 2
+                // Provider 2: Secondary Audio API Endpoint
                 if (!audioUrl) {
                     try {
-                        const res2 = await fetch(`https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(video.url)}`);
-                        const data2 = await res2.json();
-                        audioUrl = data2?.result?.download?.url || data2?.result?.url;
+                        const fallbackRes = await fetch(`https://bk9.fun/download/youtube?url=${encodeURIComponent(video.url)}`);
+                        const fallbackData = await fallbackRes.json();
+                        audioUrl = fallbackData?.BK9?.downloadUrl || fallbackData?.BK9?.download;
                     } catch (e) {
-                        console.log('API 2 failed...');
+                        console.log('Fallback failed...');
                     }
                 }
 
                 if (!audioUrl) {
-                    throw new Error('Could not retrieve audio stream from endpoints.');
+                    throw new Error('All audio sources returned empty.');
                 }
 
-                // Send Audio file to WhatsApp chat
+                // Send audio to WhatsApp
                 await sock.sendMessage(remoteJid, {
                     audio: { url: audioUrl },
                     mimetype: 'audio/mp4',
