@@ -1,99 +1,97 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const qrcode = require('qrcode-terminal');
+const http = require('http');
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-extensions'
-        ]
-    }
+// Render Health Check Server
+const PORT = process.env.PORT || 8000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Baileys Security Bot Running 24/7\n');
+}).listen(PORT, () => {
+    console.log(`Web health server active on port ${PORT}`);
 });
 
-client.on('qr', (qr) => {
-    qrcode.generate(qr, { small: true });
-    console.log('Scan this QR code with WhatsApp.');
-});
+async function startBot() {
+    // Session state stored in auth_info_baileys folder
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
-client.on('ready', () => {
-    console.log('WhatsApp Group Security Bot is active!');
-});
+    const sock = makeWASocket({
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        auth: state,
+        browser: ['Ubuntu', 'Chrome', '20.0.04']
+    });
 
-client.on('message', async (msg) => {
-    // 1. Check if the message is a sticker
-    if (msg.type !== 'sticker') return;
+    sock.ev.on('creds.update', saveCreds);
 
-    // 2. Check if sent inside a group
-    const isGroup = msg.from.endsWith('@g.us');
-    if (!isGroup) return;
+    // Connection Events & QR Generator
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-    const groupId = msg.from;
-    const senderId = msg.author || msg.from;
-
-    console.log(`[Sticker Detected] Group: ${groupId} | Sender: ${senderId}`);
-
-    try {
-        const kickResult = await client.pupPage.evaluate(async (gId, sId) => {
-            try {
-                const widFactory = window.require('WAWebWidFactory');
-                const groupWid = widFactory.createWid(gId);
-                const senderWid = widFactory.createWid(sId);
-
-                // Fetch group metadata collection
-                const groupMetadataCollection = window.require('WAWebCollections').GroupMetadata || window.require('WAWebCollections').WAWebGroupMetadataCollection;
-                let metadata = groupMetadataCollection.get(groupWid);
-                if (!metadata) {
-                    await groupMetadataCollection.update(groupWid);
-                    metadata = groupMetadataCollection.get(groupWid);
-                }
-
-                if (metadata && metadata.participants) {
-                    // Normalize collection models to check admin status
-                    const participants = metadata.participants.getModelsArray 
-                        ? metadata.participants.getModelsArray() 
-                        : (metadata.participants._models || []);
-
-                    const senderPart = participants.find(p => (p.id?._serialized || p.id) === senderWid._serialized);
-                    if (senderPart && (senderPart.isAdmin || senderPart.isSuperAdmin)) {
-                        return { success: false, reason: 'sender_is_admin' };
-                    }
-                }
-
-                // Official WhatsApp internal participant removal bridge
-                const GroupBridge = window.require('WAWebGroupParticipantsBridge') || window.require('WAWebGroupModifyParticipantsBridge');
-                if (GroupBridge && typeof GroupBridge.removeParticipants === 'function') {
-                    await GroupBridge.removeParticipants(groupWid, [senderWid]);
-                    return { success: true };
-                }
-
-                // Fallback to internal RPC action
-                const widToJid = window.require('WAWebWidToJid');
-                const rpc = window.require('WASmaxGroupsRemoveParticipantsRPC');
-                await rpc.sendRemoveParticipantsRPC({
-                    iqTo: widToJid.widToGroupJid(groupWid),
-                    participantArgs: [{ participantJid: widToJid.widToUserJid(senderWid) }]
-                });
-
-                return { success: true };
-            } catch (internalErr) {
-                return { success: false, reason: internalErr.message || internalErr };
-            }
-        }, groupId, senderId);
-
-        if (kickResult.success) {
-            console.log(`Successfully kicked: ${senderId}`);
-            await msg.delete(true).catch(() => {});
-            await client.sendMessage(groupId, '⚠️ Stickers are not allowed. Participant removed.');
-        } else {
-            console.log(`Could not kick: ${kickResult.reason}`);
+        if (qr) {
+            console.log('\n--- SCAN THIS QR CODE FROM WHATSAPP ---');
+            qrcode.generate(qr, { small: true });
         }
 
-    } catch (err) {
-        console.error('Execution Error:', err.message || err);
-    }
-});
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed. Reconnecting:', shouldReconnect);
+            if (shouldReconnect) {
+                startBot();
+            }
+        } else if (connection === 'open') {
+            console.log('✅ WhatsApp Group Security Bot is active and connected!');
+        }
+    });
 
-client.initialize();
+    // Detect Messages
+    sock.ev.on('messages.upsert', async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const remoteJid = msg.key.remoteJid;
+        const isGroup = remoteJid.endsWith('@g.us');
+        if (!isGroup) return;
+
+        // Check if message is a Sticker
+        const isSticker = !!msg.message.stickerMessage;
+        if (!isSticker) return;
+
+        const sender = msg.key.participant || msg.participant;
+        console.log(`[Sticker Detected] Group: ${remoteJid} | Sender: ${sender}`);
+
+        try {
+            // Get group metadata to verify permissions
+            const metadata = await sock.groupMetadata(remoteJid);
+            const myJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+
+            const botAdmin = metadata.participants.find(p => p.id === myJid && (p.admin === 'admin' || p.admin === 'superadmin'));
+            if (!botAdmin) {
+                console.log('Bot is not an admin in this group. Cannot remove user.');
+                return;
+            }
+
+            const senderParticipant = metadata.participants.find(p => p.id === sender);
+            if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'superadmin')) {
+                console.log('Sender is an Admin. Ignoring kick action.');
+                return;
+            }
+
+            // Remove the user from the group
+            await sock.groupParticipantsUpdate(remoteJid, [sender], 'remove');
+            console.log(`Successfully removed user: ${sender}`);
+
+            // Delete the sticker message
+            await sock.sendMessage(remoteJid, { delete: msg.key });
+
+            // Notify group
+            await sock.sendMessage(remoteJid, { text: '⚠️ Stickers are not allowed in this group. Participant removed.' });
+
+        } catch (error) {
+            console.error('Action error:', error);
+        }
+    });
+}
+
+startBot();
