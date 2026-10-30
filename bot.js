@@ -1,3 +1,6 @@
+const yts = require('yt-search');
+const ytdl = require('@distube/ytdl-core');
+const fs = require('fs');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const http = require('http');
