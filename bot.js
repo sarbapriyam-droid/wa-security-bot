@@ -1,72 +1,54 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    DisconnectReason 
+} = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const http = require('http');
 const yts = require('yt-search');
-const fs = require('fs');
 
 const BOT_PHONE_NUMBER = "919330785861";
 
-// Render Health Check Web Server
+// Render Health Check Server
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Baileys Security & Music Bot Running 24/7\n');
+    res.end('WhatsApp Security & Music Bot Running 24/7\n');
 }).listen(PORT, () => {
-    console.log(`Web health server active on port ${PORT}`);
+    console.log(`Server listening on port ${PORT}`);
 });
 
 async function startBot() {
-    const authFolder = 'auth_info_baileys';
-    const { state, saveCreds } = await useMultiFileAuthState(authFolder);
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         auth: state,
-        browser: ['Chrome (Linux)', '', '']
+        browser: ['Ubuntu', 'Chrome', '20.0.04']
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Request Pairing Code if not registered
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-                console.log(`\n====================================`);
-                console.log(`🔥 NEW PAIRING CODE: ${code}`);
-                console.log(`====================================\n`);
-            } catch (err) {
-                console.error('Pairing Code Error:', err.message);
-            }
-        }, 8000);
+                console.log(`👉 PAIRING CODE: ${code}`);
+            } catch (err) {}
+        }, 5000);
     }
 
-    // Connection Updates
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
-
         if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log(`Connection closed (Status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
-
-            if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                console.log('Session expired/rejected. Cleaning session directory...');
-                try {
-                    fs.rmSync(authFolder, { recursive: true, force: true });
-                } catch (e) {}
-            }
-
-            if (shouldReconnect) {
-                startBot();
-            }
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) startBot();
         } else if (connection === 'open') {
             console.log('✅ WhatsApp Group Security & Music Bot is active and connected!');
         }
     });
 
-    // Detect Messages
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
@@ -78,7 +60,7 @@ async function startBot() {
                             msg.message?.extendedTextMessage?.text || 
                             msg.message?.imageMessage?.caption || '';
 
-        // --- Music Command (!play) ---
+        // --- Music Downloader (!play) ---
         if (messageText.toLowerCase().startsWith('!play')) {
             const query = messageText.replace(/!play/i, '').trim();
             if (!query) return;
@@ -100,26 +82,36 @@ async function startBot() {
 
                 let audioUrl = null;
 
+                // Provider 1: Widipe API
                 try {
-                    const cobaltRes = await fetch("https://cobalt-backend.canary.fun/api/json", {
-                        method: "POST",
-                        headers: { "Accept": "application/json", "Content-Type": "application/json" },
-                        body: JSON.stringify({ url: video.url, downloadMode: "audio", audioFormat: "mp3" })
-                    });
-                    const cobaltData = await cobaltRes.json();
-                    if (cobaltData.url) audioUrl = cobaltData.url;
+                    const res1 = await fetch(`https://widipe.com/download/ytdl?url=${encodeURIComponent(video.url)}`);
+                    const data1 = await res1.json();
+                    audioUrl = data1?.result?.mp3 || data1?.result?.dl;
                 } catch (e) {}
 
+                // Provider 2: Siputzx API Fallback
                 if (!audioUrl) {
                     try {
-                        const fallbackRes = await fetch(`https://bk9.fun/download/youtube?url=${encodeURIComponent(video.url)}`);
-                        const fallbackData = await fallbackRes.json();
-                        audioUrl = fallbackData?.BK9?.downloadUrl || fallbackData?.BK9?.download;
+                        const res2 = await fetch(`https://api.siputzx.my.id/api/d/ytmp3?url=${encodeURIComponent(video.url)}`);
+                        const data2 = await res2.json();
+                        audioUrl = data2?.data?.dl;
                     } catch (e) {}
                 }
 
-                if (!audioUrl) throw new Error('Download link unavailable.');
+                // Provider 3: BK9 API
+                if (!audioUrl) {
+                    try {
+                        const res3 = await fetch(`https://bk9.fun/download/youtube?url=${encodeURIComponent(video.url)}`);
+                        const data3 = await res3.json();
+                        audioUrl = data3?.BK9?.downloadUrl || data3?.BK9?.download;
+                    } catch (e) {}
+                }
 
+                if (!audioUrl) {
+                    throw new Error('All audio APIs failed');
+                }
+
+                // Send audio to WhatsApp chat
                 await sock.sendMessage(remoteJid, {
                     audio: { url: audioUrl },
                     mimetype: 'audio/mp4',
@@ -127,13 +119,13 @@ async function startBot() {
                 }, { quoted: msg });
 
             } catch (err) {
-                console.error('Music error:', err.message);
-                await sock.sendMessage(remoteJid, { text: '⚠️ Failed to send audio. Please try another song.' }, { quoted: msg });
+                console.error('Audio download error:', err.message);
+                await sock.sendMessage(remoteJid, { text: '⚠️ Download failed. Please try another song.' }, { quoted: msg });
             }
             return;
         }
 
-        // --- Sticker Security Checker ---
+        // --- Sticker Remover ---
         if (!isGroup || msg.key.fromMe) return;
         if (!msg.message.stickerMessage) return;
 
