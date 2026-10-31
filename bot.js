@@ -9,11 +9,11 @@ const yts = require('yt-search');
 
 const BOT_PHONE_NUMBER = "919330785861";
 
-// Web Health Server
+// Web Health Server for Render 24/7
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('WhatsApp Security & Music Bot Running 24/7\n');
+    res.end('WhatsApp Bot Running\n');
 }).listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
 });
@@ -65,8 +65,26 @@ async function startBot() {
             const query = messageText.replace(/!play/i, '').trim();
             if (!query) return;
 
-            await sock.sendMessage(remoteJid, { text: `🔍 Searching for: *${query}*...` }, { quoted: msg });  try { const searchResults = await yts(query); const video = searchResults.videos[0];  if (!video) { await sock.sendMessage(remoteJid, { text: '❌ No songs found!' }, { quoted: msg }); return; }  await sock.sendMessage(remoteJid, { text: `🎶 Downloading *${video.title}* (${video.timestamp})...\nPlease wait.` }, { quoted: msg });  let audioBuffer = null;  // Provider 1: Delirius YouTube Engine (Direct MP3 Stream) try { const api1 = `https://deliriussapi-oficial.vercel.app/download/ytmp3?url=${encodeURIComponent(video.url)}`;
-                    const res1 = await fetch(api1);
+            await sock.sendMessage(remoteJid, { text: `🔍 Searching for: *${query}*...` }, { quoted: msg });
+
+            try {
+                const searchResults = await yts(query);
+                const video = searchResults.videos[0];
+
+                if (!video) {
+                    await sock.sendMessage(remoteJid, { text: '❌ No songs found!' }, { quoted: msg });
+                    return;
+                }
+
+                await sock.sendMessage(remoteJid, { 
+                    text: `🎶 Downloading *${video.title}* (${video.timestamp})...\nPlease wait.` 
+                }, { quoted: msg });
+
+                let audioBuffer = null;
+
+                // Provider 1: Delirius API
+                try {
+                    const res1 = await fetch(`https://deliriussapi-oficial.vercel.app/download/ytmp3?url=${encodeURIComponent(video.url)}`);
                     const data1 = await res1.json();
                     const directUrl = data1?.data?.download?.url;
 
@@ -75,11 +93,53 @@ async function startBot() {
                         const arrayBuffer = await fileRes.arrayBuffer();
                         audioBuffer = Buffer.from(arrayBuffer);
                     }
-                } catch (e) {
-                    console.log('Provider 1 failed');
-                }
+                } catch (e) {}
 
-                // Provider 2: Siputzx Direct Stream Buffer Fallback
+                // Provider 2: Siputzx Fallback
                 if (!audioBuffer) {
                     try {
-                        const api2 = `
+                        const res2 = await fetch(`https://api.siputzx.my.id/api/d/ytmp3?url=${encodeURIComponent(video.url)}`);
+                        const data2 = await res2.json();
+                        const fallbackUrl = data2?.data?.dl;
+
+                        if (fallbackUrl) {
+                            const fileRes = await fetch(fallbackUrl);
+                            const arrayBuffer = await fileRes.arrayBuffer();
+                            audioBuffer = Buffer.from(arrayBuffer);
+                        }
+                    } catch (e) {}
+                }
+
+                if (!audioBuffer) {
+                    throw new Error('All download sources failed');
+                }
+
+                await sock.sendMessage(remoteJid, {
+                    audio: audioBuffer,
+                    mimetype: 'audio/mp4',
+                    ptt: false,
+                    fileName: `${video.title}.mp3`
+                }, { quoted: msg });
+
+            } catch (err) {
+                console.error('Audio error:', err.message);
+                await sock.sendMessage(remoteJid, { text: '⚠️ Download failed. Please try another song.' }, { quoted: msg });
+            }
+            return;
+        }
+
+        // --- Sticker Remover ---
+        if (!isGroup || msg.key.fromMe) return;
+        if (!msg.message.stickerMessage) return;
+
+        const sender = msg.key.participant || msg.participant;
+
+        try {
+            const metadata = await sock.groupMetadata(remoteJid);
+            const myJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+
+            const botAdmin = metadata.participants.find(p => p.id === myJid && (p.admin === 'admin' || p.admin === 'superadmin'));
+            if (!botAdmin) return;
+
+            const senderParticipant = metadata.participants.find(p => p.id === sender);
+            if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'super
