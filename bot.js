@@ -60,7 +60,7 @@ async function startBot() {
                             msg.message?.extendedTextMessage?.text || 
                             msg.message?.imageMessage?.caption || '';
 
-        // --- Music Downloader (!play) ---
+        // --- 1. Music Command (!play) ---
         if (messageText.toLowerCase().startsWith('!play')) {
             const query = messageText.replace(/!play/i, '').trim();
             if (!query) return;
@@ -128,7 +128,7 @@ async function startBot() {
             return;
         }
 
-        // --- Sticker Remover ---
+        // --- 2. Sticker Remover ---
         if (!isGroup || msg.key.fromMe) return;
         if (!msg.message.stickerMessage) return;
 
@@ -142,4 +142,15 @@ async function startBot() {
             if (!botAdmin) return;
 
             const senderParticipant = metadata.participants.find(p => p.id === sender);
-            if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'super
+            if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'superadmin')) return;
+
+            await sock.groupParticipantsUpdate(remoteJid, [sender], 'remove');
+            await sock.sendMessage(remoteJid, { delete: msg.key });
+            await sock.sendMessage(remoteJid, { text: '⚠️ Stickers are not allowed in this group. Participant removed.' });
+        } catch (error) {
+            console.error('Action error:', error);
+        }
+    });
+}
+
+startBot();
