@@ -9,7 +9,7 @@ const yts = require('yt-search');
 
 const BOT_PHONE_NUMBER = "919330785861";
 
-// Render Health Check Server
+// Web Health Server
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -65,89 +65,21 @@ async function startBot() {
             const query = messageText.replace(/!play/i, '').trim();
             if (!query) return;
 
-            await sock.sendMessage(remoteJid, { text: `🔍 Searching for: *${query}*...` }, { quoted: msg });
-
-            try {
-                const searchResults = await yts(query);
-                const video = searchResults.videos[0];
-
-                if (!video) {
-                    await sock.sendMessage(remoteJid, { text: '❌ No songs found!' }, { quoted: msg });
-                    return;
-                }
-
-                await sock.sendMessage(remoteJid, { 
-                    text: `🎶 Downloading *${video.title}* (${video.timestamp})...\nPlease wait.` 
-                }, { quoted: msg });
-
-                let audioUrl = null;
-
-                // Provider 1: Widipe API
-                try {
-                    const res1 = await fetch(`https://widipe.com/download/ytdl?url=${encodeURIComponent(video.url)}`);
+            await sock.sendMessage(remoteJid, { text: `🔍 Searching for: *${query}*...` }, { quoted: msg });  try { const searchResults = await yts(query); const video = searchResults.videos[0];  if (!video) { await sock.sendMessage(remoteJid, { text: '❌ No songs found!' }, { quoted: msg }); return; }  await sock.sendMessage(remoteJid, { text: `🎶 Downloading *${video.title}* (${video.timestamp})...\nPlease wait.` }, { quoted: msg });  let audioBuffer = null;  // Provider 1: Delirius YouTube Engine (Direct MP3 Stream) try { const api1 = `https://deliriussapi-oficial.vercel.app/download/ytmp3?url=${encodeURIComponent(video.url)}`;
+                    const res1 = await fetch(api1);
                     const data1 = await res1.json();
-                    audioUrl = data1?.result?.mp3 || data1?.result?.dl;
-                } catch (e) {}
+                    const directUrl = data1?.data?.download?.url;
 
-                // Provider 2: Siputzx API Fallback
-                if (!audioUrl) {
+                    if (directUrl) {
+                        const fileRes = await fetch(directUrl);
+                        const arrayBuffer = await fileRes.arrayBuffer();
+                        audioBuffer = Buffer.from(arrayBuffer);
+                    }
+                } catch (e) {
+                    console.log('Provider 1 failed');
+                }
+
+                // Provider 2: Siputzx Direct Stream Buffer Fallback
+                if (!audioBuffer) {
                     try {
-                        const res2 = await fetch(`https://api.siputzx.my.id/api/d/ytmp3?url=${encodeURIComponent(video.url)}`);
-                        const data2 = await res2.json();
-                        audioUrl = data2?.data?.dl;
-                    } catch (e) {}
-                }
-
-                // Provider 3: BK9 API
-                if (!audioUrl) {
-                    try {
-                        const res3 = await fetch(`https://bk9.fun/download/youtube?url=${encodeURIComponent(video.url)}`);
-                        const data3 = await res3.json();
-                        audioUrl = data3?.BK9?.downloadUrl || data3?.BK9?.download;
-                    } catch (e) {}
-                }
-
-                if (!audioUrl) {
-                    throw new Error('All audio APIs failed');
-                }
-
-                // Send audio to WhatsApp chat
-                await sock.sendMessage(remoteJid, {
-                    audio: { url: audioUrl },
-                    mimetype: 'audio/mp4',
-                    fileName: `${video.title}.mp3`
-                }, { quoted: msg });
-
-            } catch (err) {
-                console.error('Audio download error:', err.message);
-                await sock.sendMessage(remoteJid, { text: '⚠️ Download failed. Please try another song.' }, { quoted: msg });
-            }
-            return;
-        }
-
-        // --- Sticker Remover ---
-        if (!isGroup || msg.key.fromMe) return;
-        if (!msg.message.stickerMessage) return;
-
-        const sender = msg.key.participant || msg.participant;
-
-        try {
-            const metadata = await sock.groupMetadata(remoteJid);
-            const myJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-
-            const botAdmin = metadata.participants.find(p => p.id === myJid && (p.admin === 'admin' || p.admin === 'superadmin'));
-            if (!botAdmin) return;
-
-            const senderParticipant = metadata.participants.find(p => p.id === sender);
-            if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'superadmin')) return;
-
-            await sock.groupParticipantsUpdate(remoteJid, [sender], 'remove');
-            await sock.sendMessage(remoteJid, { delete: msg.key });
-            await sock.sendMessage(remoteJid, { text: '⚠️ Stickers are not allowed in this group. Participant removed.' });
-        } catch (error) {
-            console.error('Action error:', error);
-        }
-    });
-}
-
-startBot();
+                        const api2 = `
