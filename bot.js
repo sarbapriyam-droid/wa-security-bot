@@ -2,7 +2,7 @@ const {
     default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason,
-    Browsers
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const http = require('http');
@@ -12,18 +12,33 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 
-const BOT_PHONE_NUMBER = "919330785861";
+let currentQR = null;
+const PORT = process.env.PORT || 8080;
 
-// Web Health Server for Render & Local Port Binding
-const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('WhatsApp Group Security & Music Bot Running 24/7\n');
+    if (currentQR) {
+        const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(currentQR)}`;
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`
+            <html>
+                <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:95vh;font-family:sans-serif;background:#111;color:#fff;">
+                    <h2>Scan with WhatsApp (Linked Devices)</h2>
+                    <div style="background:#fff;padding:16px;border-radius:10px;">
+                        <img src="${qrImgUrl}" alt="QR" style="display:block;" />
+                    </div>
+                    <p style="margin-top:15px;color:#00ff88;">Refreshing every 15s...</p>
+                    <script>setTimeout(() => { location.reload(); }, 15000);</script>
+                </body>
+            </html>
+        `);
+    } else {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('WhatsApp Group Security & Music Bot Running 24/7\n');
+    }
 }).listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
 });
 
-// Decrypt Official JioSaavn Akamai CDN URL
 function decryptSaavnUrl(encUrl) {
     const key = Buffer.from('38346591', 'utf-8');
     const decipher = crypto.createDecipheriv('des-ecb', key, '');
@@ -33,10 +48,10 @@ function decryptSaavnUrl(encUrl) {
 }
 
 async function startBot() {
-    // Unzip auth session on Render if auth_info_baileys.zip exists
+    // Unzip auth if exists on Render
     if (fs.existsSync('auth_info_baileys.zip') && !fs.existsSync('auth_info_baileys/creds.json')) {
         try {
-            console.log('Unzipping auth session from auth_info_baileys.zip...');
+            console.log('Unzipping session zip...');
             execSync('unzip -o auth_info_baileys.zip');
             console.log('✅ Session extracted successfully');
         } catch (e) {
@@ -45,12 +60,18 @@ async function startBot() {
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    
+    // WhatsApp-এর বর্তমান লাইভ ভার্সন সংগ্রহ
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`Using WA version ${version.join('.')}, isLatest: ${isLatest}`);
 
     const sock = makeWASocket({
+        version,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false,
+        printQRInTerminal: true, // সরাসরি টার্মিনালে কিউআর রেন্ডার করবে
         auth: state,
-        browser: Browsers.macOS('Desktop'),
+        browser: ['Ubuntu', 'Chrome', '20.0.04'],
+        syncFullHistory: false,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 0,
         keepAliveIntervalMs: 10000
@@ -58,30 +79,31 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Pairing Code Request Handler
-    if (!sock.authState.creds.registered) {
-        console.log("Generating Pairing Code, please wait...");
-        setTimeout(async () => {
-            try {
-                const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-                console.log(`\n================================`);
-                console.log(`👉 PAIRING CODE: ${code}`);
-                console.log(`================================\n`);
-            } catch (err) {
-                console.error("Pairing code error:", err.message);
-            }
-        }, 3000);
-    }
-
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            currentQR = qr;
+            console.log('\n======================================================');
+            console.log('👉 QR CODE READY!');
+            console.log(`🔗 Browser View: http://localhost:${PORT}`);
+            console.log('======================================================\n');
+        }
+
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log(`Connection closed (code: ${statusCode}). Reconnecting: ${shouldReconnect}`);
+            
+            // রিকানেক্ট লুপ কমাতে ৩ সেকেন্ড বিরতি
             if (shouldReconnect) {
-                startBot();
+                setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ WhatsApp Group Security & Music Bot is active and connected!');
+            currentQR = null;
+            console.log('\n=============================================');
+            console.log('✅ BOT CONNECT HOYE GECHHE & ACTIVE!');
+            console.log('=============================================\n');
         }
     });
 
@@ -100,22 +122,18 @@ async function startBot() {
             console.log(`📩 Message in [${remoteJid}]: ${messageText}`);
         }
 
-        // --- 1. Music Command Handler (!play) ---
+        // 1. Music Command (!play)
         if (messageText.toLowerCase().trim().startsWith('!play')) {
             const query = messageText.replace(/!play/i, '').trim();
-            console.log(`🎵 Play triggered for: "${query}"`);
-
             if (!query) {
                 await sock.sendMessage(remoteJid, { text: 'গানের নাম লিখুন। যেমন: *!play No Cap*' }, { quoted: msg });
                 return;
             }
 
             await sock.sendMessage(remoteJid, { text: `🔍 Searching for: *${query}*...` }, { quoted: msg });
-
             const tempFilePath = path.join(__dirname, `temp_${Date.now()}.mp3`);
 
             try {
-                // Official JioSaavn Public Search Gateway
                 const searchRes = await axios.get('https://www.jiosaavn.com/api.php', {
                     params: {
                         __call: 'search.getResults',
@@ -127,16 +145,12 @@ async function startBot() {
                         p: 1,
                         q: query
                     },
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-                    },
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
                     timeout: 10000
                 });
 
                 let data = searchRes.data;
-                if (typeof data === 'string') {
-                    data = JSON.parse(data.trim());
-                }
+                if (typeof data === 'string') data = JSON.parse(data.trim());
 
                 const song = data?.results?.[0];
                 if (!song) {
@@ -155,30 +169,16 @@ async function startBot() {
                 }, { quoted: msg });
 
                 const encUrl = song.more_info?.encrypted_media_url || song.encrypted_media_url;
-                if (!encUrl) {
-                    throw new Error('Media URL missing from track data');
-                }
+                if (!encUrl) throw new Error('Media URL missing from track data');
 
                 let cdnUrl = decryptSaavnUrl(encUrl);
                 const highBitrateUrl = cdnUrl.replace(/_96\.mp4|_160\.mp4/, '_320.mp4');
 
-                console.log(`Downloading stream from CDN...`);
-
                 let downloadStream;
                 try {
-                    downloadStream = await axios({
-                        method: 'GET',
-                        url: highBitrateUrl,
-                        responseType: 'stream',
-                        timeout: 30000
-                    });
+                    downloadStream = await axios({ method: 'GET', url: highBitrateUrl, responseType: 'stream', timeout: 30000 });
                 } catch (e) {
-                    downloadStream = await axios({
-                        method: 'GET',
-                        url: cdnUrl,
-                        responseType: 'stream',
-                        timeout: 30000
-                    });
+                    downloadStream = await axios({ method: 'GET', url: cdnUrl, responseType: 'stream', timeout: 30000 });
                 }
 
                 const writer = fs.createWriteStream(tempFilePath);
@@ -189,8 +189,6 @@ async function startBot() {
                     writer.on('error', reject);
                 });
 
-                console.log(`Audio saved. Uploading to WhatsApp: ${tempFilePath}`);
-
                 await sock.sendMessage(remoteJid, {
                     audio: { url: tempFilePath },
                     mimetype: 'audio/mp4',
@@ -198,22 +196,19 @@ async function startBot() {
                     fileName: `${songTitle}.mp3`
                 }, { quoted: msg });
 
-                console.log(`✅ Audio successfully sent: ${songTitle}`);
-
+                console.log(`✅ Audio sent: ${songTitle}`);
             } catch (err) {
-                console.error('Audio error details:', err.message);
+                console.error('Audio error:', err.message);
                 await sock.sendMessage(remoteJid, { text: `⚠️ Download failed: ${err.message}` }, { quoted: msg });
             } finally {
                 if (fs.existsSync(tempFilePath)) {
-                    try {
-                        fs.unlinkSync(tempFilePath);
-                    } catch (e) {}
+                    try { fs.unlinkSync(tempFilePath); } catch (e) {}
                 }
             }
             return;
         }
 
-        // --- 2. Sticker Security Checker ---
+        // 2. Sticker Security Checker
         if (!isGroup || msg.key.fromMe) return;
         if (!msg.message.stickerMessage) return;
 
@@ -223,30 +218,19 @@ async function startBot() {
             const metadata = await sock.groupMetadata(remoteJid);
             const myJid = (sock.user.id.split(':')[0] || sock.user.id) + '@s.whatsapp.net';
 
-            // Check if Bot is admin
             const botAdmin = metadata.participants.find(p => p.id === myJid && (p.admin === 'admin' || p.admin === 'superadmin'));
-            if (!botAdmin) {
-                console.log('⚠️ Bot is not an admin in this group.');
-                return;
-            }
+            if (!botAdmin) return;
 
-            // Check if Sender is admin
             const senderParticipant = metadata.participants.find(p => p.id === sender);
             if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'superadmin')) {
                 return;
             }
 
-            // Action: Remove participant and delete sticker
             await sock.groupParticipantsUpdate(remoteJid, [sender], 'remove');
             await sock.sendMessage(remoteJid, { delete: msg.key });
             await sock.sendMessage(remoteJid, { text: '⚠️ Stickers are not allowed in this group. Participant removed.' });
-
         } catch (error) {
-            if (error?.data === 403) {
-                console.log('Action skipped: Missing admin rights (403 Forbidden).');
-            } else {
-                console.error('Action error:', error.message || error);
-            }
+            console.error('Security action error:', error.message || error);
         }
     });
 }
