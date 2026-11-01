@@ -1,7 +1,8 @@
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
-    DisconnectReason 
+    DisconnectReason,
+    Browsers
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const http = require('http');
@@ -13,7 +14,7 @@ const { execSync } = require('child_process');
 
 const BOT_PHONE_NUMBER = "919330785861";
 
-// Health check web server for Render & local environments
+// Web Health Server for Render & Local Port Binding
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -32,7 +33,7 @@ function decryptSaavnUrl(encUrl) {
 }
 
 async function startBot() {
-    // Render-এ আপলোড করা Zip ফাইল থেকে সেশন আনজিপ করার লজিক
+    // Unzip auth session on Render if auth_info_baileys.zip exists
     if (fs.existsSync('auth_info_baileys.zip') && !fs.existsSync('auth_info_baileys/creds.json')) {
         try {
             console.log('Unzipping auth session from auth_info_baileys.zip...');
@@ -49,12 +50,15 @@ async function startBot() {
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         auth: state,
-        browser: ['Ubuntu', 'Chrome', '20.0.04']
+        browser: Browsers.macOS('Desktop'),
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 0,
+        keepAliveIntervalMs: 10000
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // ফ্রেশ সেশন না পেলে পেয়ারিং কোড জেনারেট করবে
+    // Pairing Code Request Handler
     if (!sock.authState.creds.registered) {
         console.log("Generating Pairing Code, please wait...");
         setTimeout(async () => {
