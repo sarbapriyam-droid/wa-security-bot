@@ -9,10 +9,11 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const crypto = require('crypto');
+const { execSync } = require('child_process');
 
 const BOT_PHONE_NUMBER = "919330785861";
 
-// Health check web server for Render
+// Health check web server for Render & local environments
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -21,7 +22,7 @@ http.createServer((req, res) => {
     console.log(`Server listening on port ${PORT}`);
 });
 
-// Decrypt Official JioSaavn Media URL
+// Decrypt Official JioSaavn Akamai CDN URL
 function decryptSaavnUrl(encUrl) {
     const key = Buffer.from('38346591', 'utf-8');
     const decipher = crypto.createDecipheriv('des-ecb', key, '');
@@ -31,6 +32,17 @@ function decryptSaavnUrl(encUrl) {
 }
 
 async function startBot() {
+    // Render-এ আপলোড করা Zip ফাইল থেকে সেশন আনজিপ করার লজিক
+    if (fs.existsSync('auth_info_baileys.zip') && !fs.existsSync('auth_info_baileys/creds.json')) {
+        try {
+            console.log('Unzipping auth session from auth_info_baileys.zip...');
+            execSync('unzip -o auth_info_baileys.zip');
+            console.log('✅ Session extracted successfully');
+        } catch (e) {
+            console.error('Unzip error:', e.message);
+        }
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     const sock = makeWASocket({
@@ -42,22 +54,28 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // ফ্রেশ সেশন না পেলে পেয়ারিং কোড জেনারেট করবে
     if (!sock.authState.creds.registered) {
+        console.log("Generating Pairing Code, please wait...");
         setTimeout(async () => {
-            if (!sock.authState.creds.registered && !sock.user) {
-                try {
-                    const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-                    console.log(`\n👉 PAIRING CODE: ${code}\n`);
-                } catch (err) {}
+            try {
+                const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+                console.log(`\n================================`);
+                console.log(`👉 PAIRING CODE: ${code}`);
+                console.log(`================================\n`);
+            } catch (err) {
+                console.error("Pairing code error:", err.message);
             }
-        }, 5000);
+        }, 3000);
     }
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) startBot();
+            if (shouldReconnect) {
+                startBot();
+            }
         } else if (connection === 'open') {
             console.log('✅ WhatsApp Group Security & Music Bot is active and connected!');
         }
@@ -93,7 +111,7 @@ async function startBot() {
             const tempFilePath = path.join(__dirname, `temp_${Date.now()}.mp3`);
 
             try {
-                // Official JioSaavn Public Search
+                // Official JioSaavn Public Search Gateway
                 const searchRes = await axios.get('https://www.jiosaavn.com/api.php', {
                     params: {
                         __call: 'search.getResults',
@@ -122,7 +140,10 @@ async function startBot() {
                     return;
                 }
 
-                const songTitle = (song.song || song.title || 'Track').replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&');
+                const songTitle = (song.song || song.title || 'Track')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#039;/g, "'")
+                    .replace(/&amp;/g, '&');
                 const songArtist = song.primary_artists || song.more_info?.primary_artists || 'Artist';
 
                 await sock.sendMessage(remoteJid, { 
@@ -198,17 +219,20 @@ async function startBot() {
             const metadata = await sock.groupMetadata(remoteJid);
             const myJid = (sock.user.id.split(':')[0] || sock.user.id) + '@s.whatsapp.net';
 
+            // Check if Bot is admin
             const botAdmin = metadata.participants.find(p => p.id === myJid && (p.admin === 'admin' || p.admin === 'superadmin'));
             if (!botAdmin) {
                 console.log('⚠️ Bot is not an admin in this group.');
                 return;
             }
 
+            // Check if Sender is admin
             const senderParticipant = metadata.participants.find(p => p.id === sender);
             if (senderParticipant && (senderParticipant.admin === 'admin' || senderParticipant.admin === 'superadmin')) {
                 return;
             }
 
+            // Action: Remove participant and delete sticker
             await sock.groupParticipantsUpdate(remoteJid, [sender], 'remove');
             await sock.sendMessage(remoteJid, { delete: msg.key });
             await sock.sendMessage(remoteJid, { text: '⚠️ Stickers are not allowed in this group. Participant removed.' });
